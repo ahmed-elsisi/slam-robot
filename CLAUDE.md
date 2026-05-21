@@ -468,6 +468,42 @@ then rebuild: `cd ~/ros2_ws && colcon build --packages-select cmd_vel_to_stm32`.
 
 ---
 
+## Reset Map (start fresh without restarting everything)
+
+SLAM Toolbox has no live reset service in online async mode. Only Terminal 5 needs to restart — the rest of the TF chain stays intact.
+
+**Step 1 — kill SLAM Toolbox:**
+```bash
+pkill -f slam_toolbox
+```
+
+**Step 2 — restart SLAM Toolbox (Terminal 5):**
+```bash
+source /opt/ros/jazzy/setup.bash && source /home/slamrobot/ros2_ws/install/setup.bash
+export ROS_DOMAIN_ID=0 && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+ros2 launch slam_toolbox online_async_launch.py \
+  use_sim_time:=false \
+  slam_params_file:=/home/slamrobot/slam_virtual_odom.yaml
+```
+
+**Step 3 — clear Nav2 costmaps** (removes stale obstacle data from the old map):
+```bash
+ros2 service call /global_costmap/clear_entirely_global_costmap nav2_msgs/srv/ClearEntireCostmap "{}"
+ros2 service call /local_costmap/clear_entirely_local_costmap nav2_msgs/srv/ClearEntireCostmap "{}"
+```
+
+**Step 4 — if frontier explorer was running, restart it (Terminal 9):**
+```bash
+pkill -f frontier_explorer
+```
+Then relaunch Terminal 9 so it doesn't navigate toward frontiers from the old map.
+
+RViz will automatically show the new empty map once SLAM Toolbox republishes `map → odom`.
+Do NOT restart `laser_scan_matcher`, `robot_state_publisher`, or `joint_state_publisher`.
+
+---
+
 ## Save Map
 ```bash
 mkdir -p /home/slamrobot/maps
