@@ -74,6 +74,7 @@ const osThreadAttr_t encoderTask_attributes = {
 /* USER CODE BEGIN PV */
 volatile uint8_t uart4_rx;          // already have this, keep as volatile
 osMessageQueueId_t cmdQueueHandle;
+volatile uint32_t last_cmd_time_ms = 0;  // watchdog: updated on every valid UART4 command
 
 typedef struct
 {
@@ -279,6 +280,8 @@ int main(void)
   HAL_UART_Transmit(&huart4, (uint8_t*)hello_uart4, strlen(hello_uart4), HAL_MAX_DELAY);
 
   /* USER CODE END 2 */
+
+  last_cmd_time_ms = HAL_GetTick();  // seed watchdog so robot doesn't stop on boot
 
   /* Init scheduler */
   osKernelInitialize();
@@ -661,6 +664,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
     if (c == 'F' || c == 'B' || c == 'L' || c == 'R' || c == 'S')
     {
+      last_cmd_time_ms = HAL_GetTick();  // reset watchdog on every valid command
       CmdMsg_t msg;
       msg.cmd = c;
       osMessageQueuePut(cmdQueueHandle, &msg, 0, 0);
@@ -697,6 +701,13 @@ void StartDefaultTask(void *argument)
 
   for (;;)
   {
+    // Safety watchdog: if no valid command received from Pi in 500 ms, force stop.
+    // Protects against Pi crash, UART disconnect, or bridge process dying mid-motion.
+    if ((HAL_GetTick() - last_cmd_time_ms) > 500)
+    {
+      current_cmd = 'S';
+    }
+
     if (current_cmd != last_cmd)
     {
       apply_cmd(current_cmd);

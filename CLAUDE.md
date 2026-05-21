@@ -195,8 +195,10 @@ Config file lives on the Pi at `~/slam_virtual_odom.yaml` — not in this repo.
 source /opt/ros/jazzy/setup.bash && source /home/slamrobot/ros2_ws/install/setup.bash
 export ROS_DOMAIN_ID=0 && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
-ros2 run cmd_vel_to_stm32 cmd_vel_bridge --ros-args -r /cmd_vel:=/cmd_vel_smoothed
+ros2 run cmd_vel_to_stm32 cmd_vel_bridge
 ```
+No remapping needed — bridge subscribes directly to `/cmd_vel_out` (collision monitor output).
+To test with L/R physically inverted, add: `--ros-args -p invert_rotation:=true`
 
 ### Terminal 7 — Nav2
 ```bash
@@ -244,7 +246,7 @@ ros2 run frontier_exploration_ros2 frontier_exploration_ctl stop
 
 ### Emergency Stop
 ```bash
-ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" --once
 # or:
 pkill -f cmd_vel_bridge
@@ -256,17 +258,36 @@ pkill -f cmd_vel_bridge
 
 ### cmd_vel_to_stm32 (Python, ~/ros2_ws/src/cmd_vel_to_stm32/)
 
-Subscribes to `/cmd_vel` (remapped from `/cmd_vel_smoothed`), sends ASCII commands to STM32 over
-`/dev/ttyAMA0` at 115200, reads encoder lines, publishes `/encoder_data`.
+Subscribes to `/cmd_vel_out` (collision monitor final output — full safety pipeline), sends ASCII
+commands to STM32 over `/dev/ttyAMA0` at 115200, reads encoder lines, publishes `/encoder_data`.
 
-**cmd_vel_bridge.py — current mapping (confirmed):**
-```python
-linear_x > 0.05   → 'B'   # forward (swapped from original)
-linear_x < -0.05  → 'F'   # backward (swapped from original)
-angular_z > 0.05  → 'L'   # ⚠ physical direction not yet verified
-angular_z < -0.05 → 'R'   # ⚠ physical direction not yet verified
-else              → 'S'   # stop
+**Nav2 velocity pipeline (confirmed):**
 ```
+controller_server → /cmd_vel
+velocity_smoother → /cmd_vel_smoothed
+collision_monitor → /cmd_vel_out   ← bridge reads this
+STM32             ← bridge writes ASCII char
+```
+
+**cmd_vel_bridge.py — current logic:**
+```
+linear_x > 0.05 AND angular_z small  → 'B'         # straight forward
+linear_x < -0.05 AND angular_z small → 'F'         # straight backward
+angular_z only                        → 'L' or 'R'  # pure spin
+BOTH linear AND angular active        → time-sliced 'B'/'L'/'R' per blend ratio
+else                                  → 'S'         # stop
+```
+
+**Combined velocity blend (fix #4):** When Nav2 MPPI sends both `linear_x` and `angular_z`,
+the bridge time-slices over a 4-tick (200 ms) window. The fraction of ticks spent turning
+is proportional to `|angular_z|/1.9` vs `|linear_x|/0.5` (normalised by MPPI max values).
+Log line includes `[blend]` tag when this path is active.
+
+**invert_rotation parameter:** If physical L/R is backwards, run with
+`--ros-args -p invert_rotation:=true` to swap without rebuilding.
+
+**Watchdog:** Sends `'S'` to STM32 if no `/cmd_vel_out` arrives for >1 s.
+
 Backup of original (pre-swap) mapping: `cmd_vel_bridge_backup_before_fb_swap.py`
 Serial read timer: 50 Hz (0.02 s). On shutdown: sends `'S'` before closing port.
 
@@ -339,15 +360,16 @@ Launch: `sllidar_a1_launch.py` — supports 26 RPLIDAR model variants.
 | `wz_max` | `1.9 rad/s` | MPPI |
 | `vx_min` | `-0.35 m/s` | MPPI |
 | `robot_radius` | `0.22 m` | local + global costmap |
-| `inflation_radius` | `0.70 m` | local + global costmap |
+| `inflation_radius` | `0.35 m` | local + global costmap |
 | Costmap resolution | `0.05 m/cell` | local + global costmap |
+| Local costmap layer | `ObstacleLayer` (was VoxelLayer — switched to reduce Pi 5 CPU) | local_costmap |
 | Local costmap size | 3×3 m, rolling window | local_costmap |
 | `obstacle_max_range` | `2.5 m` | both costmaps |
 | `raytrace_max_range` | `3.0 m` | both costmaps |
 | Planner | NavFn, `use_astar: false`, `allow_unknown: true` | planner_server |
 | `max_velocity` | `[0.5, 0.0, 2.0]` | velocity_smoother |
 | `max_accel` | `[2.5, 0.0, 3.2]` | velocity_smoother |
-| Collision monitor | `FootprintApproach`, `time_before_collision: 1.2 s` | collision_monitor |
+| Collision monitor | `FootprintApproach`, `time_before_collision: 1.2 s`, output → `/cmd_vel_out` | collision_monitor |
 
 Backup: `nav2_params_backup_before_tf_fix.yaml` — state before transform_tolerance was raised to 0.5.
 
@@ -404,33 +426,37 @@ ros2 topic list | grep explore
 ros2 topic echo /encoder_data --once
 ros2 topic hz /encoder_data
 
-# cmd_vel flow
-ros2 topic echo /cmd_vel_smoothed
+# cmd_vel flow — monitor the full pipeline
+ros2 topic echo /cmd_vel_smoothed       # velocity_smoother output
+ros2 topic echo /cmd_vel_out            # collision_monitor output → bridge reads this
 ```
 
 ---
 
 ## Manual Motor Tests (⚠ lift wheels off ground first!)
 
+> These publish directly to `/cmd_vel_out` (what the bridge reads), bypassing Nav2 entirely.
+> Use only with cmd_vel_bridge running and Nav2 stopped.
+
 ```bash
 # Forward
-timeout 2 ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+timeout 2 ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.20, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
 
 # Backward
-timeout 2 ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+timeout 2 ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: -0.20, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
 
 # Turn — angular_z positive (currently mapped to 'L')
-timeout 2 ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+timeout 2 ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.30}}" -r 10
 
 # Turn — angular_z negative (currently mapped to 'R')
-timeout 2 ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+timeout 2 ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: -0.30}}" -r 10
 
 # Stop
-ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" --once
 ```
 
@@ -458,7 +484,7 @@ ros2 run nav2_map_server map_saver_cli -f /home/slamrobot/maps/autonomous_explor
 | Nav2: `Timed out waiting for transform from base_link` | Wrong base frame | Confirm `robot_base_frame: base_footprint` everywhere in nav2_params.yaml |
 | Nav2: `Lookup would require extrapolation into the future` | TF timestamp drift | Already fixed: `transform_tolerance: 0.5` set throughout |
 | Nav2: `Failed to create plan with tolerance 0.500000` | Goal in obstacle / unknown / inflated zone | Clear costmaps; send goal to clear open area |
-| Robot turns only one direction | Nav2 sending only angular vel, or L/R mapping wrong | Echo `/cmd_vel_smoothed`; run manual turn tests |
+| Robot turns only one direction | L/R mapping wrong | Echo `/cmd_vel_out`; run manual turn tests; use `-p invert_rotation:=true` on bridge |
 | `Service 'control_exploration' not available` | frontier_explorer not running or crashed | `ros2 node list \| grep frontier`; restart Terminal 9 |
 
 ### Clear costmaps
@@ -584,7 +610,7 @@ DBG,Ld:<left_delta> Rd:<right_delta> Ltot:<left_total> Rtot:<right_total> Lcm:<l
 
 ### ⚠ Important Firmware Notes
 
-1. **Combined velocity not supported.** The STM32 only executes one command at a time (F/B/L/R/S). The Pi bridge (`cmd_vel_bridge.py`) maps `linear_x` first, then `angular_z`. If Nav2 sends a combined twist (e.g. move forward while turning), the bridge sends only `B` or `F` — the angular component is ignored. The robot cannot arc; it can only go straight or spin in place.
+1. **Combined velocity handled by time-slicing.** The STM32 still only accepts one command at a time (F/B/L/R/S). When Nav2 MPPI sends combined linear+angular, the bridge time-slices between forward and turn commands over a 4-tick window proportional to the normalised magnitudes. This approximates arcing; true differential drive requires a hardware PWM split (future work).
 
 2. **Encoder assignment may need swap.** TIM1=left, TIM8=right is assumed in code but has a comment warning to swap if physical behavior is wrong.
 
@@ -600,12 +626,12 @@ DBG,Ld:<left_delta> Rd:<right_delta> Ltot:<left_total> Rtot:<right_total> Lcm:<l
 
 ## Known Open Items
 
-- [ ] **L/R direction not physically verified.** `angular_z > 0 → 'L'` and `angular_z < 0 → 'R'` — run manual turn test, swap in cmd_vel_bridge.py lines 48/50 if both turn the same direction, then rebuild with `colcon build --packages-select cmd_vel_to_stm32`.
-- [ ] **Combined velocity not possible with current bridge.** STM32 accepts only F/B/L/R/S — no arc motion. Nav2 MPPI sends combined linear+angular twists; the bridge drops the angular component whenever `linear_x > 0.05`. Robot cannot arc, only go straight or spin in place. Future fix: send differential PWM per side, or encode speed+turn as two-byte protocol.
-- [ ] **Encoder left/right assignment not physically verified.** TIM1=left, TIM8=right assumed in code — needs confirmation by spinning one wheel at a time and checking which `/encoder_data` field changes.
-- [ ] `slam_virtual_odom.yaml` is on the Pi only — not tracked in this repo. Consider copying it here.
-- [ ] Encoder odometry not yet fused into `/odom`. Currently `/odom` comes entirely from laser_scan_matcher. Encoder data is published to `/encoder_data` but not used in the TF chain.
-- [ ] `docking_server` in nav2_params.yaml uses `base_frame: base_link` — harmless since docking is not used, but worth noting.
+- [ ] **L/R direction needs physical verification.** Code logic is correct (angular_z > 0 → 'L' → right_fwd+left_rev → CCW = left in ROS). If robot turns the wrong way, start bridge with `--ros-args -p invert_rotation:=true` to test; if that fixes it, make it permanent.
+- [ ] **True differential drive requires hardware.** Time-slice blend approximates arcing but the STM32 has only one shared PWM EN pin (TIM4 CH1 / PB6). Real arc motion needs a second PWM channel on the second L298N EN plus firmware + protocol changes.
+- [ ] **Encoder left/right assignment not physically verified.** TIM1=left, TIM8=right per code comment — confirm by spinning one wheel and checking `/encoder_data` fields.
+- [ ] `slam_virtual_odom.yaml` lives on the Pi only — not tracked in this repo. Copy it here.
+- [ ] Encoder odometry not yet fused into `/odom`. `/odom` comes entirely from laser_scan_matcher; `/encoder_data` is published but unused in the TF chain.
+- [ ] `docking_server` in nav2_params.yaml uses `base_frame: base_link` — harmless, docking not used.
 
 ---
 
@@ -620,6 +646,8 @@ DBG,Ld:<left_delta> Rd:<right_delta> Ltot:<left_total> Rtot:<right_total> Lcm:<l
 7. Only one process may hold `/dev/ttyAMA0` at a time.
 8. Lift wheels before any manual motor test command.
 9. B = forward, F = backward (physically swapped from STM32 convention).
-10. L/R direction needs physical verification; swap lines 48/50 in cmd_vel_bridge.py if needed.
+10. L/R direction needs physical verification; use `-p invert_rotation:=true` on the bridge to test without rebuilding.
+11. Bridge reads `/cmd_vel_out` (collision_monitor output). Do not re-add the old `/cmd_vel_smoothed` remapping.
+12. STM32 watchdog stops motors after 500 ms of no UART4 command; bridge watchdog sends 'S' after 1 s of no `/cmd_vel_out`.
 11. AMCL is in nav2_params.yaml but is NOT used — SLAM Toolbox provides map→odom.
 12. `frontier_exploration_ctl` must be run via `ros2 run`, not as a bare shell command.
