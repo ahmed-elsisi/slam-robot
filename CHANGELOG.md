@@ -28,6 +28,7 @@ None — all critical and high-priority fixes from the initial audit are impleme
 | # | Status | Change | Date |
 |---|--------|--------|------|
 | 1 | ✅ Done | Forward/backward physically swapped in `cmd_vel_bridge.py` — `B`=forward, `F`=backward | 2026-05-04 |
+| 14 | ✅ Done | **[Hardware] F/B corrected back to `F`=forward, `B`=backward** — physical testing confirmed STM32 `'F'` (left_forward+right_forward) = forward, `'B'` (left_reverse+right_reverse) = backward; previous swap no longer matched firmware; both blend and linear-only paths corrected | 2026-05-21 |
 | 2 | ✅ Done | `transform_tolerance` increased to 0.5 across all Nav2 nodes — fixed TF extrapolation errors | 2026-05-04 |
 | 3 | ✅ Done | `robot_base_frame` set to `base_footprint` everywhere in `nav2_params.yaml` | 2026-05-04 |
 | 4 | ✅ Done | Full URDF created with correct geometry — `base_footprint→base_link→laser`, all 4 wheels | 2026-05-04 |

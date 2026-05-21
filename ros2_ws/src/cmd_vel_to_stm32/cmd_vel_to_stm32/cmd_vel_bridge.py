@@ -96,10 +96,10 @@ class CmdVelBridge(Node):
             if self.blend_tick < round(turn_fraction * BLEND_WINDOW):
                 command = self._turn_cmd(angular_z)
             else:
-                command = 'B' if linear_x > 0 else 'F'
+                command = 'F' if linear_x > 0 else 'B'
         elif lin_active:
             self.blend_tick = 0
-            command = 'B' if linear_x > 0 else 'F'
+            command = 'F' if linear_x > 0 else 'B'
         elif ang_active:
             self.blend_tick = 0
             command = self._turn_cmd(angular_z)

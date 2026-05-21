@@ -271,12 +271,14 @@ STM32             ← bridge writes ASCII char
 
 **cmd_vel_bridge.py — current logic:**
 ```
-linear_x > 0.05 AND angular_z small  → 'B'         # straight forward
-linear_x < -0.05 AND angular_z small → 'F'         # straight backward
+linear_x > 0.05 AND angular_z small  → 'F'         # straight forward
+linear_x < -0.05 AND angular_z small → 'B'         # straight backward
 angular_z only                        → 'L' or 'R'  # pure spin
-BOTH linear AND angular active        → time-sliced 'B'/'L'/'R' per blend ratio
+BOTH linear AND angular active        → time-sliced 'F'/'L'/'R' per blend ratio
 else                                  → 'S'         # stop
 ```
+STM32 'F' = left_forward + right_forward = physical forward ✓  
+STM32 'B' = left_reverse + right_reverse = physical backward ✓
 
 **Combined velocity blend (fix #4):** When Nav2 MPPI sends both `linear_x` and `angular_z`,
 the bridge time-slices over a 4-tick (200 ms) window. The fraction of ticks spent turning
@@ -584,8 +586,8 @@ M1 and M3 (left side) have **opposite IN1/IN2 polarity** for the same direction.
 
 | Char | Left side | Right side | Speed |
 |------|-----------|------------|-------|
-| `'F'` | forward | forward | SPEED_DRIVE (49) |
-| `'B'` | reverse | reverse | SPEED_DRIVE (49) |
+| `'F'` | forward | forward | SPEED_DRIVE (49) | physical forward ✓ confirmed |
+| `'B'` | reverse | reverse | SPEED_DRIVE (49) | physical backward ✓ confirmed |
 | `'R'` | forward | reverse | SPEED_TURN (32) — turns right in place |
 | `'L'` | reverse | forward | SPEED_TURN (32) — turns left in place |
 | `'S'` | brake | brake | 0 |
