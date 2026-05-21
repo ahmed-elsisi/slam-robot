@@ -218,7 +218,7 @@ export ROS_DOMAIN_ID=0 && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 rviz2
 ```
 Settings: Fixed Frame = `map`
-Add displays: TF, RobotModel, LaserScan (`/scan`), Map (`/map`), Global Costmap, Local Costmap, Path, MarkerArray (`/explore/frontiers`), Marker (`/explore/selected_frontier`).
+Add displays: TF, RobotModel, LaserScan (`/scan`), Map (`/map`), Global Costmap, Local Costmap, Path, MarkerArray (`/explore/frontiers`), Pose (`/explore/selected_frontier` — type is `geometry_msgs/msg/PoseStamped`).
 
 ### Terminal 9 — Frontier Explorer
 ```bash
