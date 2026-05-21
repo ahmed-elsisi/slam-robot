@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ROS 2 build artifacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ws_lidar/build/
+ws_lidar/install/
+ws_lidar/log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# STM32CubeIDE build artifacts
+STM codebase/*.elf
+STM codebase/*.bin
+STM codebase/*.map
+STM codebase/Debug/
+STM codebase/Release/
+
+# Claude Code assistant context
+.claude/
+
+# Editor
+.vscode/
+*.swp
+*.swo
