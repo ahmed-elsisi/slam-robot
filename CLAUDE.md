@@ -513,6 +513,21 @@ ros2 run nav2_map_server map_saver_cli -f /home/slamrobot/maps/autonomous_explor
 
 ---
 
+## Remote Supervision
+
+Full setup instructions are in [REMOTE_SUPERVISION.md](REMOTE_SUPERVISION.md).
+
+**Summary:** Both devices join the same local hotspot. Pi runs x11vnc + noVNC as systemd
+services (auto-start on boot). Supervisor opens a browser and visits:
+```
+http://<PI_IP>:6080/vnc.html
+```
+No internet required. No software needed on the supervisor device.
+
+Find Pi's IP: `hostname -I`
+
+---
+
 ## Common Issues and Fixes
 
 | Issue | Cause | Fix |
