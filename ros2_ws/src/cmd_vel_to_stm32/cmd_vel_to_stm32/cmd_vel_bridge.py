@@ -8,6 +8,11 @@ import serial
 VX_MAX = 0.5
 WZ_MAX = 1.9
 
+# Counter-brake pulse sent to STM32 when transitioning to stop from F or B.
+# STM32 runs the reverse command at full SPEED_DRIVE for this duration, then receives 'S'.
+# Reduce BRAKE_PULSE_S if the robot creeps backward; increase if it still coasts forward.
+BRAKE_PULSE_S = 0.060
+
 
 class CmdVelBridge(Node):
     def __init__(self):
@@ -24,6 +29,9 @@ class CmdVelBridge(Node):
         self.baudrate = 115200
         self.last_command = None
         self.last_vel_time = self.get_clock().now()
+        self.last_motion = None   # last 'F' or 'B' sent — used to pick counter-brake direction
+        self.braking = False
+        self.brake_timer = None
 
         try:
             self.ser = serial.Serial(self.serial_port, self.baudrate, timeout=0.02)
@@ -71,6 +79,26 @@ class CmdVelBridge(Node):
             self.get_logger().warn('No /cmd_vel_out for >1 s — sending stop to STM32')
             self._send('S')
 
+    def _start_brake(self):
+        brake_cmd = 'B' if self.last_motion == 'F' else 'F'
+        self.get_logger().info(
+            f'[brake] counter-pulse {brake_cmd} for {int(BRAKE_PULSE_S * 1000)} ms'
+        )
+        self._send(brake_cmd)
+        self.braking = True
+        self.brake_timer = self.create_timer(BRAKE_PULSE_S, self._on_brake_complete)
+
+    def _on_brake_complete(self):
+        if self.brake_timer is not None:
+            self.brake_timer.cancel()
+            self.destroy_timer(self.brake_timer)
+            self.brake_timer = None
+        self.braking = False
+        self.last_motion = None
+        self.get_logger().info('[brake] complete -> S')
+        self._send('S')
+        self.last_command = 'S'
+
     def cmd_vel_callback(self, msg):
         self.last_vel_time = self.get_clock().now()
         linear_x = msg.linear.x
@@ -95,12 +123,32 @@ class CmdVelBridge(Node):
         else:
             command = 'S'
 
+        # If a motion command arrives during braking, cancel the brake immediately.
+        # If another S arrives during braking, ignore it — let the timer complete.
+        if self.braking:
+            if command != 'S':
+                if self.brake_timer is not None:
+                    self.brake_timer.cancel()
+                    self.destroy_timer(self.brake_timer)
+                    self.brake_timer = None
+                self.braking = False
+                self.last_motion = None
+            else:
+                return
+
+        if command == 'S' and self.last_motion in ('F', 'B'):
+            self._start_brake()
+            return
+
         if command != self.last_command:
             self.get_logger().info(
                 f'linear_x={linear_x:.2f}, angular_z={angular_z:.2f} -> {command}'
             )
-
         self._send(command)
+        if command in ('F', 'B'):
+            self.last_motion = command
+        elif command == 'S':
+            self.last_motion = None
 
     def _send(self, command):
         self.last_command = command

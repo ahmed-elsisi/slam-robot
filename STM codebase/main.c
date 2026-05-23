@@ -187,10 +187,8 @@ static inline void right_brake(void) {
 
 
 
-#define SPEED_DRIVE     49   // 0..49 (your PWM period=49)
-#define SPEED_TURN      32
-#define SPEED_BRAKE     20   // ~41% duty — counter-inertia pulse, not strong enough to reverse
-#define BRAKE_PULSE_MS  60   // duration of counter-brake pulse in ms; tune if robot creeps backward
+#define SPEED_DRIVE 49   // 0..49 (your PWM period=49)
+#define SPEED_TURN  32
 
 static volatile char current_cmd = 'S';
 static char applied_cmd = '?';
@@ -700,7 +698,6 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 void StartDefaultTask(void *argument)
 {
   char last_cmd = 0;
-  char last_motion = 'S';  // last executed F or B — used to pick counter-brake direction
 
   for (;;)
   {
@@ -713,26 +710,8 @@ void StartDefaultTask(void *argument)
 
     if (current_cmd != last_cmd)
     {
-      char cmd = current_cmd;  // snapshot — current_cmd may change during the brake delay
-
-      if (cmd == 'S' && (last_motion == 'F' || last_motion == 'B'))
-      {
-        // Active counter-brake: momentary reverse of travel direction, then hard stop.
-        // Snapshot direction so we act on what the robot was doing, not what arrives next.
-        if (last_motion == 'F') { left_reverse();  right_reverse(); }
-        else                    { left_forward(); right_forward(); }
-        set_speed(SPEED_BRAKE);
-        osDelay(BRAKE_PULSE_MS);
-        set_speed(0);
-        left_brake(); right_brake();
-      }
-      else
-      {
-        apply_cmd(cmd);
-      }
-
-      if (cmd == 'F' || cmd == 'B') last_motion = cmd;
-      last_cmd = cmd;
+      apply_cmd(current_cmd);
+      last_cmd = current_cmd;
     }
 
     osDelay(10);

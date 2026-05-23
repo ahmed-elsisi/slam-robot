@@ -284,6 +284,11 @@ STM32 'B' = left_reverse + right_reverse = physical backward ✓
 the bridge picks the dominant axis by normalised magnitude: `|angular_z|/1.9` vs `|linear_x|/0.5`.
 Whichever is proportionally larger wins — no time-slicing, no state machine.
 
+**Counter-brake on stop:** When transitioning from `F`/`B` to `S`, the bridge sends a 60 ms
+counter-pulse in the opposite direction before issuing the final `S`. Implemented via a ROS timer;
+any non-stop command arriving during the pulse cancels the brake immediately. `BRAKE_PULSE_S = 0.060`
+in `cmd_vel_bridge.py` — reduce if the robot creeps backward, increase if it still coasts.
+
 **invert_rotation parameter:** If physical L/R is backwards, run with
 `--ros-args -p invert_rotation:=true` to swap without rebuilding.
 
@@ -361,7 +366,7 @@ Launch: `sllidar_a1_launch.py` — supports 26 RPLIDAR model variants.
 | `wz_max` | `1.9 rad/s` | MPPI |
 | `vx_min` | `-0.35 m/s` | MPPI |
 | `robot_radius` | `0.22 m` | local + global costmap |
-| `inflation_radius` | `0.50 m` | local + global costmap |
+| `inflation_radius` | `0.60 m` | local + global costmap |
 | Costmap resolution | `0.05 m/cell` | local + global costmap |
 | Local costmap layer | `ObstacleLayer` (was VoxelLayer — switched to reduce Pi 5 CPU) | local_costmap |
 | Local costmap size | 3×3 m, rolling window | local_costmap |
@@ -598,8 +603,6 @@ source ~/ros2_ws/install/setup.bash
 Speed constants:
 - `SPEED_DRIVE = 49` → 100% duty → full speed (straight)
 - `SPEED_TURN  = 32` → ~65% duty → reduced speed (rotation only)
-- `SPEED_BRAKE = 20` → ~41% duty → counter-inertia pulse on stop
-- `BRAKE_PULSE_MS = 60` → 60 ms duration of counter-brake pulse (tune if robot creeps backward)
 
 PWM frequency: 84 MHz ÷ (83+1) ÷ (49+1) = **20 kHz**
 
