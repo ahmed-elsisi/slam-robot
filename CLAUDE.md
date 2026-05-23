@@ -378,7 +378,7 @@ Launch: `sllidar_a1_launch.py` — supports 26 RPLIDAR model variants.
 | Planner | NavFn, `use_astar: false`, `allow_unknown: true` | planner_server |
 | `max_velocity` | `[0.5, 0.0, 2.0]` | velocity_smoother |
 | `max_accel` | `[2.5, 0.0, 3.2]` | velocity_smoother |
-| Collision monitor | `FootprintApproach`, `time_before_collision: 1.2 s`, output → `/cmd_vel_out` | collision_monitor |
+| Collision monitor | `FootprintApproach`, `time_before_collision: 2.0 s`, output → `/cmd_vel_out` | collision_monitor |
 
 Backup: `nav2_params_backup_before_tf_fix.yaml` — state before transform_tolerance was raised to 0.5.
 
