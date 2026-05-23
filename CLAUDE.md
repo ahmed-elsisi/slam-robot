@@ -280,10 +280,9 @@ else                                  → 'S'         # stop
 STM32 'F' = left_forward + right_forward = physical forward ✓  
 STM32 'B' = left_reverse + right_reverse = physical backward ✓
 
-**Combined velocity blend (fix #4):** When Nav2 MPPI sends both `linear_x` and `angular_z`,
-the bridge time-slices over a 4-tick (200 ms) window. The fraction of ticks spent turning
-is proportional to `|angular_z|/1.9` vs `|linear_x|/0.5` (normalised by MPPI max values).
-Log line includes `[blend]` tag when this path is active.
+**Combined velocity dominance:** When Nav2 MPPI sends both `linear_x` and `angular_z`,
+the bridge picks the dominant axis by normalised magnitude: `|angular_z|/1.9` vs `|linear_x|/0.5`.
+Whichever is proportionally larger wins — no time-slicing, no state machine.
 
 **invert_rotation parameter:** If physical L/R is backwards, run with
 `--ros-args -p invert_rotation:=true` to swap without rebuilding.
@@ -362,7 +361,7 @@ Launch: `sllidar_a1_launch.py` — supports 26 RPLIDAR model variants.
 | `wz_max` | `1.9 rad/s` | MPPI |
 | `vx_min` | `-0.35 m/s` | MPPI |
 | `robot_radius` | `0.22 m` | local + global costmap |
-| `inflation_radius` | `0.35 m` | local + global costmap |
+| `inflation_radius` | `0.50 m` | local + global costmap |
 | Costmap resolution | `0.05 m/cell` | local + global costmap |
 | Local costmap layer | `ObstacleLayer` (was VoxelLayer — switched to reduce Pi 5 CPU) | local_costmap |
 | Local costmap size | 3×3 m, rolling window | local_costmap |

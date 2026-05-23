@@ -4,13 +4,9 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Int64MultiArray
 import serial
 
-# Match MPPI limits from nav2_params.yaml so blend ratios are correctly normalised
+# MPPI limits from nav2_params.yaml — used to normalise linear vs angular dominance
 VX_MAX = 0.5
 WZ_MAX = 1.9
-
-# Number of cmd_vel ticks over which linear/angular are time-sliced when both are active.
-# At 20 Hz this window spans 200 ms, giving smooth-enough arcing without jerky stops.
-BLEND_WINDOW = 4
 
 
 class CmdVelBridge(Node):
@@ -27,7 +23,6 @@ class CmdVelBridge(Node):
         self.serial_port = '/dev/ttyAMA0'
         self.baudrate = 115200
         self.last_command = None
-        self.blend_tick = 0
         self.last_vel_time = self.get_clock().now()
 
         try:
@@ -85,32 +80,24 @@ class CmdVelBridge(Node):
         ang_active = abs(angular_z) > 0.05
 
         if lin_active and ang_active:
-            # Both axes are active: time-slice between forward and turn commands.
-            # The fraction of ticks spent turning is proportional to the normalised
-            # angular magnitude relative to the total command effort.
-            lin_norm = min(abs(linear_x) / VX_MAX, 1.0)
-            ang_norm = min(abs(angular_z) / WZ_MAX, 1.0)
-            turn_fraction = ang_norm / (lin_norm + ang_norm)
-
-            self.blend_tick = (self.blend_tick + 1) % BLEND_WINDOW
-            if self.blend_tick < round(turn_fraction * BLEND_WINDOW):
+            # Both axes active: pick the dominant one by normalised magnitude.
+            # Whichever is proportionally larger relative to its MPPI limit wins.
+            lin_norm = abs(linear_x) / VX_MAX
+            ang_norm = abs(angular_z) / WZ_MAX
+            if ang_norm >= lin_norm:
                 command = self._turn_cmd(angular_z)
             else:
                 command = 'F' if linear_x > 0 else 'B'
         elif lin_active:
-            self.blend_tick = 0
             command = 'F' if linear_x > 0 else 'B'
         elif ang_active:
-            self.blend_tick = 0
             command = self._turn_cmd(angular_z)
         else:
-            self.blend_tick = 0
             command = 'S'
 
         if command != self.last_command:
             self.get_logger().info(
                 f'linear_x={linear_x:.2f}, angular_z={angular_z:.2f} -> {command}'
-                + (' [blend]' if lin_active and ang_active else '')
             )
 
         self._send(command)
