@@ -369,7 +369,7 @@ Launch: `sllidar_a1_launch.py` — supports 26 RPLIDAR model variants.
 | `wz_max` | `1.9 rad/s` | MPPI |
 | `vx_min` | `-0.35 m/s` | MPPI |
 | `robot_radius` | `0.22 m` | local + global costmap |
-| `inflation_radius` | `0.60 m` | local + global costmap |
+| `inflation_radius` | `0.35 m` | local + global costmap |
 | Costmap resolution | `0.05 m/cell` | local + global costmap |
 | Local costmap layer | `ObstacleLayer` (was VoxelLayer — switched to reduce Pi 5 CPU) | local_costmap |
 | Local costmap size | 3×3 m, rolling window | local_costmap |
