@@ -280,9 +280,12 @@ else                                  → 'S'         # stop
 STM32 'F' = left_forward + right_forward = physical forward ✓  
 STM32 'B' = left_reverse + right_reverse = physical backward ✓
 
-**Combined velocity dominance:** When Nav2 MPPI sends both `linear_x` and `angular_z`,
-the bridge picks the dominant axis by normalised magnitude: `|angular_z|/1.9` vs `|linear_x|/0.5`.
-Whichever is proportionally larger wins — no time-slicing, no state machine.
+**Combined velocity — turn-to-align with hysteresis:** When Nav2 MPPI sends both `linear_x`
+and `angular_z`, the bridge uses a two-threshold state machine. If `|angular_z|/WZ_MAX` exceeds
+`ALIGN_TURN_START` (0.35 ≈ 0.67 rad/s), the bridge commits to an in-place turn. It resumes
+driving only once `|angular_z|/WZ_MAX` drops below `ALIGN_DRIVE_START` (0.15 ≈ 0.29 rad/s).
+The hysteresis gap prevents oscillation between turn and drive. Entering alignment turn clears
+`last_motion` so no spurious brake pulse fires after a pure spin.
 
 **Counter-brake on stop:** When transitioning from `F`/`B` to `S`, the bridge sends a 60 ms
 counter-pulse in the opposite direction before issuing the final `S`. Implemented via a ROS timer;

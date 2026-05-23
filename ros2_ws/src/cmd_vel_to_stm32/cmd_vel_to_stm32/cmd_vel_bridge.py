@@ -4,9 +4,16 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Int64MultiArray
 import serial
 
-# MPPI limits from nav2_params.yaml — used to normalise linear vs angular dominance
+# MPPI limits from nav2_params.yaml
 VX_MAX = 0.5
 WZ_MAX = 1.9
+
+# "Turn to align, then drive" hysteresis thresholds (normalised by WZ_MAX).
+# When both linear and angular are active and ang_norm exceeds ALIGN_TURN_START,
+# the bridge commits to turning in place. It resumes driving only after ang_norm
+# falls below ALIGN_DRIVE_START. The gap between the two prevents rapid oscillation.
+ALIGN_TURN_START  = 0.35   # |wz| / WZ_MAX  ~0.67 rad/s  — enter alignment turn
+ALIGN_DRIVE_START = 0.15   # |wz| / WZ_MAX  ~0.29 rad/s  — resume driving
 
 # Counter-brake pulse sent to STM32 when transitioning to stop from F or B.
 # STM32 runs the reverse command at full SPEED_DRIVE for this duration, then receives 'S'.
@@ -29,9 +36,10 @@ class CmdVelBridge(Node):
         self.baudrate = 115200
         self.last_command = None
         self.last_vel_time = self.get_clock().now()
-        self.last_motion = None   # last 'F' or 'B' sent — used to pick counter-brake direction
+        self.last_motion = None    # last 'F' or 'B' sent — used to pick counter-brake direction
         self.braking = False
         self.brake_timer = None
+        self.align_turning = False  # True while doing an in-place alignment turn before driving
 
         try:
             self.ser = serial.Serial(self.serial_port, self.baudrate, timeout=0.02)
@@ -108,19 +116,24 @@ class CmdVelBridge(Node):
         ang_active = abs(angular_z) > 0.05
 
         if lin_active and ang_active:
-            # Both axes active: pick the dominant one by normalised magnitude.
-            # Whichever is proportionally larger relative to its MPPI limit wins.
-            lin_norm = abs(linear_x) / VX_MAX
+            # "Turn to align, then drive" with hysteresis.
+            # Enter alignment turn when angular demand is large; exit when it drops enough.
+            # Clearing last_motion on entry avoids a spurious brake pulse after a pure spin.
             ang_norm = abs(angular_z) / WZ_MAX
-            if ang_norm >= lin_norm:
-                command = self._turn_cmd(angular_z)
-            else:
-                command = 'F' if linear_x > 0 else 'B'
+            if not self.align_turning and ang_norm > ALIGN_TURN_START:
+                self.align_turning = True
+                self.last_motion = None
+            elif self.align_turning and ang_norm < ALIGN_DRIVE_START:
+                self.align_turning = False
+            command = self._turn_cmd(angular_z) if self.align_turning else ('F' if linear_x > 0 else 'B')
         elif lin_active:
+            self.align_turning = False
             command = 'F' if linear_x > 0 else 'B'
         elif ang_active:
+            self.align_turning = False
             command = self._turn_cmd(angular_z)
         else:
+            self.align_turning = False
             command = 'S'
 
         # If a motion command arrives during braking, cancel the brake immediately.
