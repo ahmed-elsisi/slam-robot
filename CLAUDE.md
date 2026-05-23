@@ -598,6 +598,8 @@ source ~/ros2_ws/install/setup.bash
 Speed constants:
 - `SPEED_DRIVE = 49` → 100% duty → full speed (straight)
 - `SPEED_TURN  = 32` → ~65% duty → reduced speed (rotation only)
+- `SPEED_BRAKE = 20` → ~41% duty → counter-inertia pulse on stop
+- `BRAKE_PULSE_MS = 60` → 60 ms duration of counter-brake pulse (tune if robot creeps backward)
 
 PWM frequency: 84 MHz ÷ (83+1) ÷ (49+1) = **20 kHz**
 
