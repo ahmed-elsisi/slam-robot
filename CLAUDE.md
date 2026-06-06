@@ -1,27 +1,31 @@
 # SLAM Robot — ROS 2 Autonomous Inspection Robot
+# Approach 2 (Saif Branch) — Differential PWM Arc Motion
 
 ## Project Goal
 Mobile robot that builds a map using LiDAR + SLAM Toolbox, navigates via Nav2, avoids obstacles,
 drives physical motors via STM32, reads encoders, and explores unknown maps autonomously using
-frontier-based exploration.
+frontier-based exploration. This branch attempts true differential arc motion by sending per-wheel
+PWM values from the Pi to the STM32.
 
 ---
 
 ## Directory Layout
 
 ```
-~/Documents/ROS/                            ← this repo (local mirror / config files)
+~/Documents/ROS/                            ← this repo (Saif branch)
 ├── CLAUDE.md
+├── CHANGELOG.md                            ← Approach 2 change log
+├── stm32_main_c_fix.md                     ← STM32 firmware design notes
 ├── STM codebase/
-│   ├── main.c                              ← full STM32 firmware (FreeRTOS, motors, encoders)
+│   ├── main.c                              ← Approach 2 STM32 firmware (VEL packet parser)
 │   └── ahmedelsisi.ioc                     ← STM32CubeMX project config
 ├── nav2_params/
-│   ├── nav2_params.yaml                    ← active Nav2 config (471 lines)
+│   ├── nav2_params.yaml                    ← active Nav2 config (Approach 2 tuning)
 │   └── nav2_params_backup_before_tf_fix.yaml
 ├── explore_params/
-│   └── frontier_params.yaml                ← active frontier config (54 lines)
+│   └── frontier_params.yaml                ← active frontier config
 └── ros2_ws/src/
-    ├── cmd_vel_to_stm32/                   ← custom Python bridge package
+    ├── cmd_vel_to_stm32/                   ← custom Python bridge package (VEL protocol)
     ├── my_robot_description/               ← URDF
     ├── ros2_laser_scan_matcher/            ← virtual odom node (C++)
     ├── frontier_exploration_ros2/          ← autonomous exploration (C++, v1.6.0)
@@ -195,8 +199,9 @@ Config file lives on the Pi at `~/slam_virtual_odom.yaml` — not in this repo.
 source /opt/ros/jazzy/setup.bash && source /home/slamrobot/ros2_ws/install/setup.bash
 export ROS_DOMAIN_ID=0 && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
-ros2 run cmd_vel_to_stm32 cmd_vel_bridge --ros-args -r /cmd_vel:=/cmd_vel_smoothed
+ros2 run cmd_vel_to_stm32 cmd_vel_bridge
 ```
+Bridge subscribes to `/cmd_vel_out` directly (no remap needed — collision_monitor outputs there).
 
 ### Terminal 7 — Nav2
 ```bash
@@ -244,7 +249,7 @@ ros2 run frontier_exploration_ros2 frontier_exploration_ctl stop
 
 ### Emergency Stop
 ```bash
-ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" --once
 # or:
 pkill -f cmd_vel_bridge
@@ -256,19 +261,46 @@ pkill -f cmd_vel_bridge
 
 ### cmd_vel_to_stm32 (Python, ~/ros2_ws/src/cmd_vel_to_stm32/)
 
-Subscribes to `/cmd_vel` (remapped from `/cmd_vel_smoothed`), sends ASCII commands to STM32 over
-`/dev/ttyAMA0` at 115200, reads encoder lines, publishes `/encoder_data`.
+Subscribes to `/cmd_vel_out` (collision_monitor output). Converts Twist to differential PWM values
+and sends `VEL,left_pwm,right_pwm\r\n` packets to STM32 over `/dev/ttyAMA0` at 115200.
+Reads ENC encoder lines from STM32, publishes `/encoder_data`.
 
-**cmd_vel_bridge.py — current mapping (confirmed):**
-```python
-linear_x > 0.05   → 'B'   # forward (swapped from original)
-linear_x < -0.05  → 'F'   # backward (swapped from original)
-angular_z > 0.05  → 'L'   # ⚠ physical direction not yet verified
-angular_z < -0.05 → 'R'   # ⚠ physical direction not yet verified
-else              → 'S'   # stop
+**cmd_vel_bridge.py — Approach 2 differential PWM protocol:**
 ```
-Backup of original (pre-swap) mapping: `cmd_vel_bridge_backup_before_fb_swap.py`
-Serial read timer: 50 Hz (0.02 s). On shutdown: sends `'S'` before closing port.
+Packet format:  VEL,<left_pwm>,<right_pwm>\r\n
+Examples:
+  VEL,25,25     → both forward at PWM 25
+  VEL,-20,20    → left reverse, right forward (spin left)
+  VEL,30,15     → arc right (same direction, different PWM — speed averaged due to hardware)
+  VEL,0,0       → stop
+```
+
+**Bridge key constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `MAX_LINEAR_MPS` | 0.35 m/s | Maps to MAX_PWM |
+| `MAX_ANGULAR_RPS` | 0.80 rad/s | Maps to MAX_TURNING_PWM |
+| `MAX_PWM` | 35 | Maximum PWM sent (TIM4 Period=49) |
+| `MIN_MOVING_PWM` | 17 | Deadband lift when both wheels same direction |
+| `MIN_TURNING_PWM` | 12 | Deadband lift when wheels opposing direction |
+| `MAX_TURNING_PWM` | 24 | Cap on pure-turn PWM component |
+| `CMD_SEND_INTERVAL_S` | 0.10 s | 10 Hz rate limiter for normal packets |
+| `DEADZONE_LINEAR` | 0.02 m/s | Ignore very small linear commands |
+| `DEADZONE_ANGULAR` | 0.05 rad/s | Ignore very small angular commands |
+
+**Differential mixing:**
+```python
+forward_pwm = velocity_to_pwm(linear_x, MAX_LINEAR_MPS, MIN_MOVING_PWM, MAX_PWM)
+turn_pwm    = velocity_to_pwm(angular_z, MAX_ANGULAR_RPS, MIN_TURNING_PWM, MAX_TURNING_PWM)
+left_pwm    = forward_pwm - turn_pwm
+right_pwm   = forward_pwm + turn_pwm
+# enforce_motor_minimums() lifts sub-stall nonzero values above deadband
+```
+
+Rate limiter: normal packets capped at 10 Hz; stop packets (`VEL,0,0`) sent immediately.
+Watchdog: sends `VEL,0,0` to STM32 if no `/cmd_vel_out` received for >1 s.
+On shutdown: sends `VEL,0,0` before closing serial port.
+Non-ENC serial lines: suppressed, one warning per 5 s window.
 
 **Encoder format from STM32:**
 ```
@@ -338,8 +370,10 @@ Launch: `sllidar_a1_launch.py` — supports 26 RPLIDAR model variants.
 | `vx_max` | `0.5 m/s` | MPPI |
 | `wz_max` | `1.9 rad/s` | MPPI |
 | `vx_min` | `-0.35 m/s` | MPPI |
-| `robot_radius` | `0.22 m` | local + global costmap |
-| `inflation_radius` | `0.70 m` | local + global costmap |
+| `robot_radius` (local costmap) | `0.22 m` | local_costmap |
+| `robot_radius` (global costmap) | `0.25 m` | global_costmap |
+| `inflation_radius` (local costmap) | `0.40 m` | local_costmap |
+| `inflation_radius` (global costmap) | `0.20 m` | global_costmap |
 | Costmap resolution | `0.05 m/cell` | local + global costmap |
 | Local costmap size | 3×3 m, rolling window | local_costmap |
 | `obstacle_max_range` | `2.5 m` | both costmaps |
@@ -347,7 +381,7 @@ Launch: `sllidar_a1_launch.py` — supports 26 RPLIDAR model variants.
 | Planner | NavFn, `use_astar: false`, `allow_unknown: true` | planner_server |
 | `max_velocity` | `[0.5, 0.0, 2.0]` | velocity_smoother |
 | `max_accel` | `[2.5, 0.0, 3.2]` | velocity_smoother |
-| Collision monitor | `FootprintApproach`, `time_before_collision: 1.2 s` | collision_monitor |
+| Collision monitor | `FootprintApproach`, `time_before_collision: 4.8 s` | collision_monitor |
 
 Backup: `nav2_params_backup_before_tf_fix.yaml` — state before transform_tolerance was raised to 0.5.
 
@@ -405,7 +439,7 @@ ros2 topic echo /encoder_data --once
 ros2 topic hz /encoder_data
 
 # cmd_vel flow
-ros2 topic echo /cmd_vel_smoothed
+ros2 topic echo /cmd_vel_out
 ```
 
 ---
@@ -414,29 +448,32 @@ ros2 topic echo /cmd_vel_smoothed
 
 ```bash
 # Forward
-timeout 2 ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+timeout 2 ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.20, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
 
 # Backward
-timeout 2 ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+timeout 2 ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: -0.20, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
 
-# Turn — angular_z positive (currently mapped to 'L')
-timeout 2 ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+# Turn left (angular_z positive)
+timeout 2 ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.30}}" -r 10
 
-# Turn — angular_z negative (currently mapped to 'R')
-timeout 2 ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+# Turn right (angular_z negative)
+timeout 2 ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: -0.30}}" -r 10
 
+# Arc test (forward + turn)
+timeout 2 ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
+  "{linear: {x: 0.20, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.30}}" -r 10
+
 # Stop
-ros2 topic pub /cmd_vel_smoothed geometry_msgs/msg/Twist \
+ros2 topic pub /cmd_vel_out geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" --once
 ```
 
-If both angular_z directions produce the same physical turn: swap `'L'` and `'R'` in
-`~/ros2_ws/src/cmd_vel_to_stm32/cmd_vel_to_stm32/cmd_vel_bridge.py` lines 48 and 50,
-then rebuild: `cd ~/ros2_ws && colcon build --packages-select cmd_vel_to_stm32`.
+If L/R direction is reversed, use `--ros-args -p invert_rotation:=true` on the bridge.
+Then rebuild: `cd ~/ros2_ws && colcon build --packages-select cmd_vel_to_stm32`.
 
 ---
 
@@ -458,8 +495,10 @@ ros2 run nav2_map_server map_saver_cli -f /home/slamrobot/maps/autonomous_explor
 | Nav2: `Timed out waiting for transform from base_link` | Wrong base frame | Confirm `robot_base_frame: base_footprint` everywhere in nav2_params.yaml |
 | Nav2: `Lookup would require extrapolation into the future` | TF timestamp drift | Already fixed: `transform_tolerance: 0.5` set throughout |
 | Nav2: `Failed to create plan with tolerance 0.500000` | Goal in obstacle / unknown / inflated zone | Clear costmaps; send goal to clear open area |
-| Robot turns only one direction | Nav2 sending only angular vel, or L/R mapping wrong | Echo `/cmd_vel_smoothed`; run manual turn tests |
+| Robot arcs but curves same direction always | L/R invert needed | `--ros-args -p invert_rotation:=true` on bridge |
+| Arc radius same regardless of angular command | Hardware: single shared PWM averages speed | Expected limitation — direction correct, speed differential not possible |
 | `Service 'control_exploration' not available` | frontier_explorer not running or crashed | `ros2 node list \| grep frontier`; restart Terminal 9 |
+| Bridge shows `Ignoring non-ENC` at startup | STM32 boot noise from old firmware | Confirmed resolved — Approach 2 firmware has no startup message |
 
 ### Clear costmaps
 ```bash
@@ -498,18 +537,30 @@ source ~/ros2_ws/install/setup.bash
 
 | Task | Priority | Stack | Role |
 |------|----------|-------|------|
-| `defaultTask` | Normal | 128×4 B | Polls `current_cmd` every 10 ms, calls `apply_cmd()` on change |
-| `controlTask` | AboveNormal | 128×4 B | Blocks on `cmdQueueHandle`, sets `current_cmd`, logs "CMD: X" to USART2 |
-| `encoderTask` | Low | 256×4 B | Reads both encoders every 50 ms, sends ENC frame via UART4, DBG to USART2 |
+| `defaultTask` | Normal | 128×4 B | Safety watchdog: calls `apply_velocity(0,0)` if no VEL packet received for >1000 ms |
+| `controlTask` | AboveNormal | 128×4 B | Blocks on `velQueueHandle` (20 ms timeout), calls `apply_velocity(left,right)` |
+| `encoderTask` | Low | 256×4 B | Reads both encoders every 50 ms, sends ENC frame via `proto_uart_tx()` to UART4 + USART2 |
 
 ### UART Peripherals
 
 | Peripheral | Pins | Baud | Purpose |
 |------------|------|------|---------|
-| **UART4** | PA0 (TX), PA1 (RX) | 115200 | **Pi ↔ STM32** — receives commands, transmits ENC frames |
-| **USART2** | PA2 (TX), PA3 (RX) | 115200 | ST-Link virtual COM (debug) — DBG frames, CMD echo, RX echo |
+| **UART4** | PA0 (TX), PA1 (RX) | 115200 | **Pi ↔ STM32** — receives VEL packets, transmits ENC frames |
+| **USART2** | PA2 (TX), PA3 (RX) | 115200 | ST-Link virtual COM — receives ENC mirror; RX armed but USART2 does NOT control motion |
 
-**UART4 ISR behavior:** 1-byte interrupt-driven RX. Lowercase auto-converted to uppercase. Valid chars `F/B/L/R/S` pushed to `cmdQueueHandle` (depth 8). Raw debug echo `RX:0xXX ('c')` sent to USART2. Error callback clears PE/FE/NE/ORE flags and re-arms `Receive_IT`.
+**UART RX behavior:** 1-byte interrupt-driven. `parse_uart_byte()` accumulates bytes into a 32-byte line buffer. On `\n`, calls `sscanf` to parse `VEL,left,right`. Valid VEL packets push a `VelMsg_t{left_pwm, right_pwm}` to `velQueueHandle`. `last_cmd_time_ms` is updated on each successful parse. Error callback clears PE/FE/NE/ORE and re-arms.
+
+### VEL Packet Parser
+
+```c
+// Packet format:  VEL,<left_pwm>,<right_pwm>\r\n
+// Example:        VEL,-20,20\r\n
+static void parse_uart_byte(uint8_t byte) {
+  // accumulate into rx_line_buf until '\n'
+  // on '\n': sscanf(rx_line_buf + 4, "%d,%d", &lp, &rp)
+  //          clamp to ±MAX_PWM=49, push VelMsg_t to velQueueHandle
+}
+```
 
 ### PWM — Motor Speed
 
@@ -517,11 +568,28 @@ source ~/ros2_ws/install/setup.bash
 |-------|---------|-----|-------|--------|
 | TIM4 | CH1 | PB6 | D10_EN | Prescaler=83, Period=49 → **20 kHz**, shared EN for all motors |
 
-Speed constants:
-- `SPEED_DRIVE = 49` → 100% duty → full speed (straight)
-- `SPEED_TURN  = 32` → ~65% duty → reduced speed (rotation only)
+**Hardware limitation:** TIM4 CH1 is the only EN pin shared across both L298N drivers.
+`apply_velocity()` sets direction independently per side, but speed uses the average:
+```c
+uint16_t speed = (abs(left_pwm) + abs(right_pwm)) / 2;
+set_speed(speed);
+```
+This means arcing commands produce correct wheel directions but equal speed on both sides.
+True differential speed control requires a second dedicated PWM channel.
 
-PWM frequency: 84 MHz ÷ (83+1) ÷ (49+1) = **20 kHz**
+### `apply_velocity(left_pwm, right_pwm)` Logic
+
+| Condition | Left side | Right side |
+|-----------|-----------|------------|
+| `left_pwm > 0` | `left_forward()` | — |
+| `left_pwm < 0` | `left_reverse()` | — |
+| `left_pwm == 0` | `left_brake()` | — |
+| `right_pwm > 0` | — | `right_forward()` |
+| `right_pwm < 0` | — | `right_reverse()` |
+| `right_pwm == 0` | — | `right_brake()` |
+| speed | `(abs(L) + abs(R)) / 2` on TIM4 CH1 | |
+
+Stop = all INx LOW (L298N brake, not coast).
 
 ### Encoders
 
@@ -532,8 +600,7 @@ PWM frequency: 84 MHz ÷ (83+1) ÷ (49+1) = **20 kHz**
 
 Both: TI12 quadrature mode, both edges FALLING, period=65535 (16-bit counter).  
 Delta computation uses 16-bit signed cast for wraparound: `(int16_t)(now - previous)`.  
-**Both deltas are negated** before accumulation: `left_delta = -encoder_delta_16bit(...)` — compensates physical mounting direction.  
-Encoder assignment comment in code: *"If your physical robot shows the opposite, swap htim1 and htim8."*
+**Both deltas are negated** before accumulation — compensates physical mounting direction.
 
 Encoder constants:
 ```c
@@ -552,21 +619,9 @@ CM_PER_TICK        = 21.05 / 3960 ≈ 0.005315 cm/tick
 | M3 rear-left | Left | PB14 (IN1_2) | PB15 (IN2_2) | Wired inverted vs M1 — same-side motors face opposite directions |
 | M4 rear-right | Right | PA6 (D12) | PA5 (D13) | Wired inverted vs M2 — same-side motors face opposite directions |
 
-M1 and M3 (left side) have **opposite IN1/IN2 polarity** for the same direction. Same for M2/M4. This is intentional — front and rear motors on each side are physically mounted facing opposite directions.
+M1 and M3 (left side) have **opposite IN1/IN2 polarity** for the same direction. Same for M2/M4.
 
-### apply_cmd() Logic (confirmed from code)
-
-| Char | Left side | Right side | Speed |
-|------|-----------|------------|-------|
-| `'F'` | forward | forward | SPEED_DRIVE (49) |
-| `'B'` | reverse | reverse | SPEED_DRIVE (49) |
-| `'R'` | forward | reverse | SPEED_TURN (32) — turns right in place |
-| `'L'` | reverse | forward | SPEED_TURN (32) — turns left in place |
-| `'S'` | brake | brake | 0 |
-
-Stop = both INx LOW (L298N brake, not coast).
-
-### ENC Frame Format (sent by encoderTask via UART4, 20 Hz)
+### ENC Frame Format (sent by encoderTask via proto_uart_tx, 20 Hz)
 
 ```
 ENC,<seq>,<time_ms>,<left_delta>,<right_delta>,<left_total>,<right_total>\r\n
@@ -574,38 +629,34 @@ ENC,<seq>,<time_ms>,<left_delta>,<right_delta>,<left_total>,<right_total>\r\n
 - `seq`: 32-bit counter starting at 0
 - `time_ms`: `HAL_GetTick()` milliseconds since boot
 - deltas and totals: signed 32-bit integers
-- UART4 transmit timeout: 20 ms per frame
-
-### DBG Frame Format (sent to USART2 only — not seen by Pi)
-
-```
-DBG,Ld:<left_delta> Rd:<right_delta> Ltot:<left_total> Rtot:<right_total> Lcm:<left_cm> Rcm:<right_cm>\r\n
-```
+- Broadcast to both UART4 and USART2
 
 ### ⚠ Important Firmware Notes
 
-1. **Combined velocity not supported.** The STM32 only executes one command at a time (F/B/L/R/S). The Pi bridge (`cmd_vel_bridge.py`) maps `linear_x` first, then `angular_z`. If Nav2 sends a combined twist (e.g. move forward while turning), the bridge sends only `B` or `F` — the angular component is ignored. The robot cannot arc; it can only go straight or spin in place.
+1. **No startup message.** Approach 2 firmware sends nothing on boot — eliminates non-ENC serial noise.
 
-2. **Encoder assignment may need swap.** TIM1=left, TIM8=right is assumed in code but has a comment warning to swap if physical behavior is wrong.
+2. **USART2 RX does not control motion.** Callback is armed for rearm only; packets from USART2 are discarded.
 
-3. **Both encoder deltas are negated.** Negative delta = forward movement for both wheels (as mounted).
+3. **UART4 is the Pi link.** Always connect Pi to UART4 (PA0/PA1). USART2 (ST-Link) is for monitoring ENC frames only.
 
-4. **UART4 is the Pi link.** USART2 is debug-only (ST-Link). Never connect Pi to USART2.
+4. **Speed is averaged on single PWM channel.** `apply_velocity(L, R)` correctly controls direction per side but uses `(|L|+|R|)/2` for speed. This is a hardware constraint of the shared TIM4 CH1 EN pin.
 
-5. **STM32 accepts lowercase commands** — UART ISR auto-uppercases them.
+5. **Watchdog timeout is 1000 ms.** If no VEL packet arrives for >1 s, `defaultTask` forces `apply_velocity(0,0)`.
 
-6. **Startup message:** On boot, STM32 sends `DBG,UART4 command link ready\r\n` on both USART2 and UART4.
+6. **Encoder assignment may need swap.** TIM1=left, TIM8=right is assumed — confirm by spinning one wheel.
+
+7. **Both encoder deltas are negated.** Negative delta = forward movement (physical mounting).
 
 ---
 
 ## Known Open Items
 
-- [ ] **L/R direction not physically verified.** `angular_z > 0 → 'L'` and `angular_z < 0 → 'R'` — run manual turn test, swap in cmd_vel_bridge.py lines 48/50 if both turn the same direction, then rebuild with `colcon build --packages-select cmd_vel_to_stm32`.
-- [ ] **Combined velocity not possible with current bridge.** STM32 accepts only F/B/L/R/S — no arc motion. Nav2 MPPI sends combined linear+angular twists; the bridge drops the angular component whenever `linear_x > 0.05`. Robot cannot arc, only go straight or spin in place. Future fix: send differential PWM per side, or encode speed+turn as two-byte protocol.
-- [ ] **Encoder left/right assignment not physically verified.** TIM1=left, TIM8=right assumed in code — needs confirmation by spinning one wheel at a time and checking which `/encoder_data` field changes.
+- [ ] **Hardware: single shared PWM channel prevents true differential speed.** `apply_velocity()` averages `(|L|+|R|)/2` across both sides. True arc speed control requires adding a second PWM channel to the second L298N EN pin.
+- [ ] **L/R direction not physically verified.** Run arc test, use `--ros-args -p invert_rotation:=true` if rotation direction is wrong, then make permanent.
+- [ ] **Encoder left/right assignment not physically verified.** TIM1=left, TIM8=right assumed in code — confirm by spinning one wheel and checking which `/encoder_data` field changes.
 - [ ] `slam_virtual_odom.yaml` is on the Pi only — not tracked in this repo. Consider copying it here.
 - [ ] Encoder odometry not yet fused into `/odom`. Currently `/odom` comes entirely from laser_scan_matcher. Encoder data is published to `/encoder_data` but not used in the TF chain.
-- [ ] `docking_server` in nav2_params.yaml uses `base_frame: base_link` — harmless since docking is not used, but worth noting.
+- [ ] `docking_server` in nav2_params.yaml uses `base_frame: base_link` — harmless since docking is not used.
 
 ---
 
@@ -619,7 +670,8 @@ DBG,Ld:<left_delta> Rd:<right_delta> Ltot:<left_total> Rtot:<right_total> Lcm:<l
 6. Nav2 `robot_base_frame` = `base_footprint` everywhere. Never `base_link`.
 7. Only one process may hold `/dev/ttyAMA0` at a time.
 8. Lift wheels before any manual motor test command.
-9. B = forward, F = backward (physically swapped from STM32 convention).
-10. L/R direction needs physical verification; swap lines 48/50 in cmd_vel_bridge.py if needed.
+9. Bridge sends `VEL,left_pwm,right_pwm\r\n` — NOT single-byte F/B/L/R/S. STM32 firmware must have `parse_uart_byte()` VEL parser flashed.
+10. Arc commands produce correct wheel directions but equal speed (hardware limitation). Do not expect true speed-differential arcing without hardware change.
 11. AMCL is in nav2_params.yaml but is NOT used — SLAM Toolbox provides map→odom.
 12. `frontier_exploration_ctl` must be run via `ros2 run`, not as a bare shell command.
+13. Manual tests publish to `/cmd_vel_out` (not `/cmd_vel_smoothed`) — bridge subscribes to `/cmd_vel_out`.
