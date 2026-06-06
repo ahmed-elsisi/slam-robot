@@ -368,8 +368,10 @@ Launch: `sllidar_a1_launch.py` — supports 26 RPLIDAR model variants.
 | `vx_max` | `0.5 m/s` | MPPI |
 | `wz_max` | `1.9 rad/s` | MPPI |
 | `vx_min` | `-0.35 m/s` | MPPI |
-| `robot_radius` | `0.22 m` | local + global costmap |
-| `inflation_radius` | `0.20 m` | local + global costmap |
+| `robot_radius` (local costmap) | `0.22 m` | local_costmap |
+| `robot_radius` (global costmap) | `0.25 m` | global_costmap |
+| `inflation_radius` (local costmap) | `0.40 m` | local_costmap |
+| `inflation_radius` (global costmap) | `0.20 m` | global_costmap |
 | Costmap resolution | `0.05 m/cell` | local + global costmap |
 | Local costmap layer | `ObstacleLayer` (was VoxelLayer — switched to reduce Pi 5 CPU) | local_costmap |
 | Local costmap size | 3×3 m, rolling window | local_costmap |
@@ -378,7 +380,7 @@ Launch: `sllidar_a1_launch.py` — supports 26 RPLIDAR model variants.
 | Planner | NavFn, `use_astar: false`, `allow_unknown: true` | planner_server |
 | `max_velocity` | `[0.5, 0.0, 2.0]` | velocity_smoother |
 | `max_accel` | `[2.5, 0.0, 3.2]` | velocity_smoother |
-| Collision monitor | `FootprintApproach`, `time_before_collision: 2.0 s`, output → `/cmd_vel_out` | collision_monitor |
+| Collision monitor | `FootprintApproach`, `time_before_collision: 4.8 s`, output → `/cmd_vel_out` | collision_monitor |
 
 Backup: `nav2_params_backup_before_tf_fix.yaml` — state before transform_tolerance was raised to 0.5.
 

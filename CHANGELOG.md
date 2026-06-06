@@ -1,4 +1,8 @@
-# Changelog — SLAM Autonomous Inspection Robot
+# Changelog — SLAM Robot — ahmed-adly Branch
+## Approach 1 Algorithms + Approach 2 (Saif) Parameter Values
+
+Code and algorithms: `fix/critical-navigation-and-safety` (Approach 1)
+Nav2 parameter values: `Saif` (Approach 2)
 
 All notable changes, fixes, and known issues are tracked here.
 Format: `[Status] | Issue | Severity | Fix Location | Date`
